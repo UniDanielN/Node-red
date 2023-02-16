@@ -1,0 +1,152 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <math.h>
+#define I2C_SLAVE_ADDR 0x04
+// Replace the next variables with your SSID/Password combination
+const char* ssid = "greedy2";
+const char* password = "EEEEE1002";     
+const int trigPin = 33;
+const int echoPin = 35;           
+
+// Add your MQTT Broker IP address
+const char* mqtt_server = "192.168.2.1";
+int leftMotor_speed,rightMotor_speed,servoAngle;
+WiFiClient espClient;
+PubSubClient client(espClient);
+long lastMsg = 0;
+char msg[50];
+int value = 0;
+const int ledPin = 4;
+
+void setup() {
+  Wire.begin();
+  Serial.begin(115200);
+  // default settings
+  // (you can also pass in a Wire library object like &Wire2)
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+  pinMode(trigPin, OUTPUT); // Sets the trigPin as an Output
+  pinMode(echoPin, INPUT); // Sets the echoPin as an Input
+  pinMode(ledPin, OUTPUT);
+  Transmit_to_arduino(0,0,90);
+}
+
+void Transmit_to_arduino(int leftMotor_speed, int rightMotor_speed, int servoAngle)
+{
+  Wire.beginTransmission(I2C_SLAVE_ADDR); // transmit to device #4
+  Wire.write((byte)((leftMotor_speed & 0x0000FF00) >> 8));    // first byte of x, containing bits 16 to 9
+  Wire.write((byte)(leftMotor_speed & 0x000000FF));           // second byte of x, containing the 8 LSB - bits 8 to 1
+  Wire.write((byte)((rightMotor_speed & 0x0000FF00) >> 8));   // first byte of y, containing bits 16 to 9
+  Wire.write((byte)(rightMotor_speed & 0x000000FF));          // second byte of y, containing the 8 LSB - bits 8 to 1
+  Wire.write((byte)((servoAngle & 0x0000FF00) >> 8));    // first byte of x, containing bits 16 to 9
+  Wire.write((byte)(servoAngle & 0x000000FF));
+  Wire.endTransmission();   // stop transmitting
+}
+
+void setup_wifi() {
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void callback(char* topic, byte* message, unsigned int length) {
+  Serial.print("Message arrived on topic: ");
+  Serial.print(topic);
+  Serial.print(". Message: ");
+  String messageTemp;
+  
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)message[i]);
+    messageTemp += (char)message[i];
+  }
+  Serial.println();
+
+  // Feel free to add more if statements to control more GPIOs with MQTT
+
+  // If a message is received on the topic esp32/output, you check if the message is either "on" or "off". 
+  // Changes the output state according to the message
+  if (String(topic) == "esp32/output") {
+    Serial.print("Changing output to ");
+    if(messageTemp == "on"){
+      Serial.println("on");
+      digitalWrite(ledPin, HIGH);
+    }
+    else if(messageTemp == "off"){
+      Serial.println("off");
+      digitalWrite(ledPin, LOW);
+    }
+  }
+  if (String(topic) == "esp32/motorSpeed") {
+    int newSpeed=messageTemp.toInt();
+    leftMotor_speed=newSpeed;
+    rightMotor_speed=newSpeed;
+    Trasnmit_to_arduino(leftMotor_speed,rightMotor_speed,servoAngle);
+  }
+  if (String(topic) == "esp32/servoAngle") {
+      servoAngle = messageTemp.toInt();
+      Transmit_to_arduino(leftMotor_speed,rightMotor_speed,servoAngle);
+  }
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("ESP8266Client")) {
+      Serial.println("connected");
+      // Subscribe
+      client.subscribe("esp32/output");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  long now = millis();
+  if (now - lastMsg > 5000) {
+    lastMsg = now;
+
+    float distance,duration;
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+    duration = pulseIn(echoPin, HIGH);
+    distance=(duration * 0.034 / 2);
+    
+    // Convert the value to a char array
+    char distanceString[8];
+    dtostrf(distance, 1, 2, distanceString);
+    Serial.print("Distance: ");
+    Serial.println(distanceString);
+    client.publish("esp32/distance", distanceString);
+
+  }
+}
